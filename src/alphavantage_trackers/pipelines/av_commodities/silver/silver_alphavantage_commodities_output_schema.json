@@ -1,0 +1,17 @@
+{
+    "asset_name": "str",
+    "date": "datetime64[ns]",
+    "year": "int64",
+    "month": "int64",
+    "day": "int64",
+    "day_of_week": "int64",
+    "close": "float64",
+    "pct_change": "float64",
+    "sma_7": "float64",
+    "sma_30": "float64",
+    "volatility_7": "float64",
+    "volatility_30": "float64",
+    "rsi_7": "float64",
+    "rsi_14": "float64",
+    "rsi_21": "float64"
+}
