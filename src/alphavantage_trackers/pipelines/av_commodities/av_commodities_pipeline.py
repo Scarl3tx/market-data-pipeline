@@ -11,6 +11,8 @@ from alphavantage_trackers.pipelines.av_commodities.silver.silver_transform_alph
 
 from alphavantage_trackers.paths import (
     CONFIG_PATH,
+    AV_COMMODITIES_PATH,
+    AV_STOCKS_PATH
 )
 from alphavantage_trackers.logging_config import get_pipeline_logger
 logger = get_pipeline_logger("commodities")
@@ -70,18 +72,31 @@ def run_commodities_pipeline():
             encoding="utf-8"
         ) as file:
             schema_config = json.load(file)
-
         if not schema_config:
             logger.info("[COMMODITIES] No schema configurations found.")
             return False
-        
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        logger.info(f"[COMMODITIES] Configuration error: {exc}")
+        return False
+
+    try:
+        with open(
+            AV_COMMODITIES_PATH / "silver" / "silver_alphavantage_commodities_output_schema.json",
+            "r",
+            encoding="utf-8"
+        ) as file:
+            silver_commodities_output_schema = json.load(file)
+        if not silver_commodities_output_schema:
+            logger.info("[COMMODITIES] No schema configurations found.")
+            return False
     except (FileNotFoundError, json.JSONDecodeError) as exc:
         logger.info(f"[COMMODITIES] Configuration error: {exc}")
         return False
 
     silver_success = run_alphavantage_commodities_silver(
         configs=commodities_config,
-        asset_schemas=schema_config
+        asset_schemas=schema_config,
+        silver_output_schema=silver_commodities_output_schema
     )
 
     if not silver_success:

@@ -11,6 +11,7 @@ from alphavantage_trackers.pipelines.av_stocks.silver.silver_transform_alphavant
 
 from alphavantage_trackers.paths import (
     CONFIG_PATH,
+    AV_STOCKS_PATH
 )
 
 from alphavantage_trackers.logging_config import get_pipeline_logger
@@ -81,9 +82,26 @@ def run_stocks_pipeline():
         logger.exception(f"[STOCKS] Configuration error: {exc}")
         return False
 
+    try:
+        with open(
+            AV_STOCKS_PATH / "silver" / "silver_alphavantage_stocks_output_schema.json",
+            "r",
+            encoding="utf-8"
+        ) as file:
+            silver_output_schema = json.load(file)
+
+        if not silver_output_schema:
+            logger.error("[STOCKS] No schema configurations found.")
+            return False
+        
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        logger.exception(f"[STOCKS] Configuration error: {exc}")
+        return False
+
     silver_success = run_alphavantage_stocks_silver(
         configs=stocks_config,
-        asset_schemas=schema_config
+        asset_schemas=schema_config,
+        silver_output_schema=silver_output_schema
     )
 
     if not silver_success:
