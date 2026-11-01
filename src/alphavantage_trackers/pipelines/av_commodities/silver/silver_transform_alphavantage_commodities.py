@@ -1,18 +1,20 @@
-from pathlib import Path
 import pandas as pd
-from pandas.tseries.holiday import USFederalHolidayCalendar
-from pandas.tseries.offsets import CustomBusinessDay
-from datetime import datetime
+import pandas_market_calendars as mcal
 
 from alphavantage_trackers.paths import (
     RAW_PATH,
     COMMODITIES_SILVER_PATH,
-    PROJECT_ROOT
+    PROJECT_ROOT,
+    AV_COMMODITIES_PATH
 )
 
 from alphavantage_trackers.func import load_json_file
+
 from alphavantage_trackers.logging_config import get_pipeline_logger
 logger = get_pipeline_logger("commodities")
+
+nyse=mcal.get_calendar("NYSE")
+RSI_PERIODS = [7, 14, 21]
 
 def pq_to_df(asset_name: str) -> pd.DataFrame:
     # Search recursively under data/raw for the asset's raw files
@@ -155,48 +157,154 @@ def derive_time_attributes(df: pd.DataFrame, date_column: str = "date") -> pd.Da
     return df_enriched
 
 def calculate_percentage_changes(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty or "close" not in df.columns or "date" not in df.columns:
+    if df.empty or not {"asset_name", "close", "date"}.issubset(df.columns):
         return df
 
-    # 1. Sort chronologically by timeline
-    df_calc = df.sort_values(by=["asset_name", "date"]).reset_index(drop=True)
+    df_calc = df.sort_values(
+        by=["asset_name", "date"]
+    ).reset_index(drop=True)
 
-    # 2. Grab the prior row's details
+    # Previous observation for each asset
     df_calc["prev_close"] = df_calc.groupby("asset_name")["close"].shift(1)
     df_calc["prev_date"] = df_calc.groupby("asset_name")["date"].shift(1)
 
-    # 3. Calculate percent change normally
-    df_calc["pct_change"] = (df_calc["close"] - df_calc["prev_close"]) / df_calc["prev_close"]
+    # Percentage change
+    df_calc["pct_change"] = (
+        (df_calc["close"] - df_calc["prev_close"])
+        / df_calc["prev_close"]
+    ) * 100
 
-    # 4. 🔥 THE HOLIDAY-AWARE GUARD
-    # Load the official US holiday calendar profile
-    us_bd = CustomBusinessDay(calendar=USFederalHolidayCalendar())
-
-    # We loop through rows where a previous date exists to calculate the actual trading day gap
+    # Check actual NYSE trading-session gaps
     def verify_trading_gap(row):
         if pd.isna(row["prev_date"]) or pd.isna(row["date"]):
-            return 1 # Baseline safe state
-            
-        # Calculate how many business days SHOULD be between these two points
-        # Using us_bd strips out standard weekends AND federal holidays automatically!
-        expected_business_days = len(pd.date_range(start=row["prev_date"], end=row["date"], freq=us_bd)) - 1
-        return expected_business_days
+            return 1
 
-    # 5. Apply the trading day calculation gap check
-    df_calc["trading_day_gap"] = df_calc.apply(verify_trading_gap, axis=1)
+        trading_days = nyse.valid_days(
+            start_date=pd.Timestamp(row["prev_date"]).date(),
+            end_date=pd.Timestamp(row["date"]).date()
+        )
 
-    # If the gap is > 1 trading day, it means a real market session was lost or skipped
+        return len(trading_days) - 1
+
+    df_calc["trading_day_gap"] = df_calc.apply(
+        verify_trading_gap,
+        axis=1
+    )
+
+    # Suppress returns across missing trading sessions
     is_data_missing = df_calc["trading_day_gap"] > 1
-    df_calc.loc[is_data_missing, "pct_change"] = None
+    df_calc.loc[is_data_missing, "pct_change"] = float("nan")
 
-    # Audit logging
     gap_count = is_data_missing.sum()
-    if gap_count > 0:
-        logger.warning(f"⚠️ DATA GAP FIREWALL: Set 'pct_change' to NaN on {gap_count} rows due to dropped/missing trading sessions.")
 
-    # Clean up tracking features
-    df_calc = df_calc.drop(columns=["prev_close", "prev_date", "trading_day_gap"])
-    return df_calc
+    if gap_count > 0:
+        logger.warning(
+            f"⚠️ DATA GAP FIREWALL: Set 'pct_change' to NaN "
+            f"on {gap_count} rows due to missing NYSE trading sessions."
+        )
+
+    return df_calc.drop(
+        columns=["prev_close", "prev_date", "trading_day_gap"]
+    )
+
+def calculate_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    required_cols = {"asset_name", "date", "close", "pct_change"}
+
+    if df.empty or not required_cols.issubset(df.columns):
+        return df
+
+    df_calc = df.sort_values(
+        by=["asset_name", "date"]
+    ).copy()
+
+    # Simple Moving Averages
+    df_calc["sma_7"] = (
+        df_calc.groupby("asset_name")["close"]
+        .transform(
+            lambda s: s.rolling(window=7, min_periods=7).mean()
+        )
+    )
+
+    df_calc["sma_30"] = (
+        df_calc.groupby("asset_name")["close"]
+        .transform(
+            lambda s: s.rolling(window=30, min_periods=30).mean()
+        )
+    )
+
+    # Rolling volatility (standard deviation of percentage changes)
+    df_calc["volatility_7"] = (
+        df_calc.groupby("asset_name")["pct_change"]
+        .transform(
+            lambda s: s.rolling(window=7, min_periods=7).std()
+        )
+    )
+
+    df_calc["volatility_30"] = (
+        df_calc.groupby("asset_name")["pct_change"]
+        .transform(
+            lambda s: s.rolling(window=30, min_periods=30).std()
+        )
+    )
+
+    return df_calc.reset_index(drop=True)
+
+def calculate_rsi(
+    df: pd.DataFrame,
+    periods: list[int]
+) -> pd.DataFrame:
+
+    if df.empty or not {"asset_name", "date", "close"}.issubset(df.columns):
+        return df
+
+    if not periods or any(p <= 0 for p in periods):
+        raise ValueError("RSI periods must be positive integers.")
+
+    df_calc = df.sort_values(
+        by=["asset_name", "date"]
+    ).copy()
+
+    def calculate_asset_rsi(close: pd.Series, period: int) -> pd.Series:
+
+        delta = close.diff()
+
+        gains = delta.clip(lower=0)
+        losses = -delta.clip(upper=0)
+
+        avg_gain = gains.ewm(
+            alpha=1 / period,
+            min_periods=period,
+            adjust=False
+        ).mean()
+
+        avg_loss = losses.ewm(
+            alpha=1 / period,
+            min_periods=period,
+            adjust=False
+        ).mean()
+
+        rs = avg_gain / avg_loss
+
+        rsi = 100 - (100 / (1 + rs))
+
+        # Edge cases
+        rsi = rsi.mask(avg_loss == 0, 100)
+        rsi = rsi.mask(
+            (avg_gain == 0) & (avg_loss == 0),
+            50
+        )
+
+        return rsi
+
+    for period in periods:
+        df_calc[f"rsi_{period}"] = (
+            df_calc.groupby("asset_name")["close"]
+            .transform(
+                lambda close: calculate_asset_rsi(close, period)
+            )
+        )
+
+    return df_calc.reset_index(drop=True)
 
 def df_integrity_check(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -242,11 +350,10 @@ def save_silver_to_pq(asset_name: str, df: pd.DataFrame):
 
     logger.info(f"💾 Saved silver Parquet file to: {file_path}")
 
-def run_alphavantage_commodities_silver(configs: dict, asset_schemas: dict) -> bool:
-
+def run_alphavantage_commodities_silver(configs: dict, asset_schemas: dict, silver_output_schema: dict) -> bool:
+    success = True
     for asset_name, asset_config in configs.items():
-        success = True
-
+    
         df_raw = pq_to_df(asset_name)
         if df_raw.empty:
             logger.warning(f"⚠️ Skipping {asset_name}: No raw data found.")
@@ -275,29 +382,63 @@ def run_alphavantage_commodities_silver(configs: dict, asset_schemas: dict) -> b
         # Step 4: Run the Time Attribute Enrichment Function
         df_enriched = derive_time_attributes(df_schema_approved, date_column="date")
 
-        # Step 5: FINANCIAL METRICS (Safely calculate chronological market changes)
-        # Ensure it's sorted oldest-to-newest before calculating percentage changes!
-        df_enriched = df_enriched.sort_values(by="date", ascending=True)
-        df_with_metrics = calculate_percentage_changes(df_enriched)
-
-        # Step 6: LOGICAL INTEGRITY FIREWALL (Check high >= open, prices > 0)
-        df_clean = df_integrity_check(df_with_metrics)
+        # Step 5: Logical integrity validation
+        df_clean = df_integrity_check(df_enriched)
+    
         if df_clean.empty:
-            logger.warning(f"⚠️ Skipping {asset_name}: Integrity check returned empty data.")
+            logger.warning(
+                f"⚠️ Skipping {asset_name}: Integrity check returned empty data."
+            )
             success = False
             continue
-        save_silver_to_pq(asset_name, df_clean)
-        logger.info(f"✅ Silver transformation successful for {asset_name} using '{schema_key}' schema.\n")
+        # Step 6: Calculate percentage changes
+        df_with_metrics = calculate_percentage_changes(df_enriched)
+    
+        # Step 7: Calculate technical indicators
+        df_with_indicators = calculate_technical_indicators(df_with_metrics)
+        df_with_indicators = calculate_rsi(
+            df_with_indicators,
+            periods=RSI_PERIODS
+        )
+        # Step 8: Validate Silver output schema
+        df_silver_approved = df_column_check(
+            df_with_indicators,
+            expected_schema=silver_output_schema
+        )
+        if df_silver_approved.empty:
+            logger.warning(
+                f"⚠️ Skipping {asset_name}: "
+                "Failed Silver output Schema Firewall validation."
+            )
+            success = False
+            continue
+        # Step 8: Save Silver output
+        try:
+            save_silver_to_pq(asset_name, df_silver_approved)
+
+            logger.info(
+                f"✅ Silver transformation successful for {asset_name} "
+                f"using '{schema_key}' schema.\n"
+            )
+        except Exception as e:
+            logger.exception(
+                f"❌ Failed to save Silver data for {asset_name}: {e}"
+            )
+            success = False
+
     return success
 
 if __name__ == "__main__":
     # 1. Resolve paths cleanly
     config_path = PROJECT_ROOT / "config.json"
     asset_schema_path = PROJECT_ROOT / "alphavantage_asset_schemas.json"
+    silver_output_schema_path = (
+        AV_COMMODITIES_PATH / "silver" /"silver_alphavantage_commodities_output_schema.json"
+    )
 
     # 2. Load configurations using the helper
     config_data = load_json_file(config_path)
     asset_schema = load_json_file(asset_schema_path)
-
+    silver_output_schema = load_json_file(silver_output_schema_path)
     # 3. Trigger the pipeline
-    run_alphavantage_commodities_silver(config_data, asset_schema)
+    run_alphavantage_commodities_silver(config_data, asset_schema, silver_output_schema)
