@@ -9,13 +9,5 @@
     "high": "float64",
     "low": "float64",
     "close": "float64",
-    "volume": "float64",
-    "pct_change": "float64",
-    "sma_7": "float64",
-    "sma_30": "float64",
-    "volatility_7": "float64",
-    "volatility_30": "float64",
-    "rsi_7": "float64",
-    "rsi_14": "float64",
-    "rsi_21": "float64"
+    "volume": "float64"
 }

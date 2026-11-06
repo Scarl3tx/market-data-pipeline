@@ -1,18 +1,10 @@
 import json
-from pathlib import Path
-
-from alphavantage_trackers.pipelines.av_commodities.bronze.extract_alphavantage_commodities_data import (
-    run_alphavantage_commodities_bronze
-)
-
 from alphavantage_trackers.pipelines.av_commodities.silver.silver_transform_alphavantage_commodities import (
     run_alphavantage_commodities_silver
 )
-
 from alphavantage_trackers.paths import (
     CONFIG_PATH,
     AV_COMMODITIES_PATH,
-    AV_STOCKS_PATH
 )
 from alphavantage_trackers.logging_config import get_pipeline_logger
 logger = get_pipeline_logger("commodities")
@@ -40,24 +32,8 @@ def run_commodities_pipeline():
             return False
 
     except (FileNotFoundError, json.JSONDecodeError) as exc:
-        logger.info(f"[COMMODITIES] Configuration error: {exc}")
+        logger.exception("[COMMODITIES] Configuration error.")
         return False
-
-    # -------------------------
-    # BRONZE
-    # -------------------------
-
-    logger.info("\n========== [COMMODITIES] Starting Bronze ==========")
-
-    bronze_success = run_alphavantage_commodities_bronze(
-        configs=commodities_config
-    )
-
-    if not bronze_success:
-        logger.info("[COMMODITIES] Bronze failed. Skipping Silver.")
-        return False
-
-    logger.info("\n========== [COMMODITIES] Bronze completed successfully ==========")
 
     # -------------------------
     # SILVER
@@ -76,7 +52,7 @@ def run_commodities_pipeline():
             logger.info("[COMMODITIES] No schema configurations found.")
             return False
     except (FileNotFoundError, json.JSONDecodeError) as exc:
-        logger.info(f"[COMMODITIES] Configuration error: {exc}")
+        logger.exception(f"[COMMODITIES] Configuration error: {exc}")
         return False
 
     try:

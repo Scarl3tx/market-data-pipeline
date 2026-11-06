@@ -1,335 +1,413 @@
-import pandas as pd
+from __future__ import annotations
+from typing import Any
+
+import polars as pl
 import pandas_market_calendars as mcal
 
 from alphavantage_trackers.paths import (
     RAW_PATH,
     STOCKS_SILVER_PATH,
     PROJECT_ROOT,
-    AV_STOCKS_PATH
+    AV_STOCKS_PATH,
 )
-
 from alphavantage_trackers.func import load_json_file
-
 from alphavantage_trackers.logging_config import get_pipeline_logger
+
 logger = get_pipeline_logger("stocks")
+nyse = mcal.get_calendar("NYSE")
 
-nyse=mcal.get_calendar("NYSE")
-RSI_PERIODS = [7, 14, 21]
+# ---------------------------------------------------------------------------
+# Schema helpers
+# ---------------------------------------------------------------------------
 
-def pq_to_df(asset_name: str) -> pd.DataFrame:
-    # Search recursively under data/raw for the asset's raw files
+def _polars_dtype(dtype: Any) -> pl.DataType:
+    """Translate the dtype strings in the existing JSON schemas to Polars."""
+    if isinstance(dtype, pl.DataType):
+        return dtype
+
+    dtype_name = str(dtype).lower().replace(" ", "")
+
+    dtype_map = {
+        "str": pl.String,
+        "string": pl.String,
+        "object": pl.String,
+        "int": pl.Int64,
+        "int64": pl.Int64,
+        "int32": pl.Int32,
+        "float": pl.Float64,
+        "float64": pl.Float64,
+        "float32": pl.Float32,
+        "bool": pl.Boolean,
+        "boolean": pl.Boolean,
+        "date": pl.Date,
+        "datetime": pl.Datetime("ns"),
+        "datetime64[ns]": pl.Datetime("ns"),
+        "datetime64[us]": pl.Datetime("us"),
+    }
+
+    if dtype_name not in dtype_map:
+        raise ValueError(f"Unsupported schema dtype: {dtype}")
+
+    return dtype_map[dtype_name]
+
+
+def _parse_date_column(df: pl.DataFrame, column: str = "date") -> pl.DataFrame:
+    """Parse a date column consistently and reject invalid/missing dates."""
+    if column not in df.columns:
+        raise KeyError(f"Required date column '{column}' is missing.")
+
+    # Casting to string first handles both Parquet Datetime and String inputs.
+    parsed = df.with_columns(
+        pl.col(column)
+        .cast(pl.String)
+        .str.to_datetime(strict=False)
+        .alias(column)
+    )
+
+    invalid_count = parsed.select(pl.col(column).is_null().sum()).item()
+
+    if invalid_count:
+        examples = (
+            parsed.filter(pl.col(column).is_null())
+            .head(10)
+            .to_dicts()
+        )
+        raise ValueError(
+            f"{invalid_count} rows have missing or invalid '{column}' values. "
+            f"Examples: {examples}"
+        )
+
+    return parsed
+
+
+# ---------------------------------------------------------------------------
+# Bronze Parquet reader
+# ---------------------------------------------------------------------------
+
+def pq_to_df(asset_name: str) -> pl.DataFrame:
+    """Read the newest raw Parquet file for an asset."""
     parquet_files = sorted(
         RAW_PATH.rglob(f"*_{asset_name}_raw.pq")
     )
 
     if not parquet_files:
-        logger.warning(f"❌ No raw Parquet files located for {asset_name}")
-        return pd.DataFrame()
+        logger.warning(
+            f"No raw Parquet files located for {asset_name}."
+        )
+        return pl.DataFrame()
 
     latest_file_path = parquet_files[-1]
 
     logger.info(
-        f"📖 Reading newest raw file for {asset_name}: "
-        f"{latest_file_path}"
+        f"Reading newest raw file for {asset_name}: {latest_file_path}"
     )
 
     try:
-        return pd.read_parquet(latest_file_path)
+        return pl.read_parquet(latest_file_path)
+    except Exception:
+        logger.exception(
+            f"Error reading raw Parquet file for {asset_name}."
+        )
+        return pl.DataFrame()
 
-    except Exception as e:
-        logger.exception(f"💥 Error reading Parquet file for {asset_name}: {e}")
-        return pd.DataFrame()
 
-def flatten_alphavantage_ohlcv(asset_name: str, df_raw: pd.DataFrame, asset_config: dict) -> pd.DataFrame:
+# ---------------------------------------------------------------------------
+# Raw Alpha Vantage structure flattening
+# ---------------------------------------------------------------------------
+
+def _clean_av_field_name(field_name: str) -> str:
+    """Convert '1. open' into 'open', etc."""
+    return field_name.split(". ", maxsplit=1)[-1].strip().replace(" ", "_")
+
+def flatten_alphavantage_ohlcv(
+    asset_name: str,
+    df_raw: pl.DataFrame,
+    asset_config: dict,
+) -> pl.DataFrame:
     """
-    Extracts nested time-series dictionary data from Alpha Vantage raw dataframes,
-    flattens the structural schema, and casts numerical columns.
+    Flatten Alpha Vantage raw structures into a conventional OHLCV table.
+
+    Supports:
+      - equity_daily: Meta Data + Time Series (Daily) struct columns
+      - commodity_gold: data containing a list/struct of observations
     """
-    if df_raw.empty:
-        return pd.DataFrame() 
+    if df_raw.is_empty():
+        return pl.DataFrame()
+
+    schema_type = asset_config.get("schema_type")
+
     try:
-        # 1. Look up the schema strategy from the asset configuration registry
-        schema_type = asset_config.get("schema_type")
-        # =====================================================================
-        # STRATEGY A: COMMODITIES (XAG, XAU)
-        # =====================================================================
-        if schema_type == "commodity_gold":
-            if "data" in df_raw.columns:
-                clean_series = df_raw["data"].dropna()
-                df_cleaned = pd.DataFrame(list(clean_series))
-            else:
-                df_cleaned = df_raw.copy()
+        raw_rows = df_raw.to_dicts()
+        records: list[dict[str, Any]] = []
             
-            # 🟢 FIX: Map 'price' to 'close' so it matches your schema validation rules
-            if "price" in df_cleaned.columns:
-                df_cleaned = df_cleaned.rename(columns={"price": "close"})
+        if schema_type == "equity_daily":
+            required = {"Meta Data", "Time Series (Daily)"}
 
-        # =====================================================================
-        # STRATEGY B: EQUITIES (NVDA) - Your Original Logic preserved!
-        # =====================================================================
-        elif schema_type == "equity_daily":
-            if "Time Series (Daily)" not in df_raw.columns:
-                raise KeyError(f"Expected column 'Time Series (Daily)' was missing for equity {asset_name}")
-                
-            clean_series = df_raw["Time Series (Daily)"].dropna()
-            df_cleaned = pd.DataFrame.from_dict(clean_series.to_dict(), orient="index")
-            df_cleaned.columns = [col.split(". ")[-1].strip().replace(" ", "_") for col in df_cleaned.columns]
-            df_cleaned.index.name = "date"
-            df_cleaned = df_cleaned.reset_index()
+            if not required.issubset(df_raw.columns):
+                logger.error(
+                    "Missing expected columns for equity_daily: %s",
+                    required - set(df_raw.columns)
+                )
+                return pl.DataFrame()
+
+            observation_rows = [
+                row
+                for row in raw_rows
+                if isinstance(row.get("Time Series (Daily)"), dict)
+            ]
+
+            records = [
+                {
+                    "date": row["Meta Data"],
+                    **{
+                        key.split(". ", 1)[-1].strip().replace(" ", "_"): value
+                        for key, value in row["Time Series (Daily)"].items()
+                    }
+                }
+                for row in observation_rows
+            ]
+
+        elif schema_type == "commodity_gold":
+            if "data" in df_raw.columns:
+                for row in raw_rows:
+                    observations = row.get("data")
+
+                    if observations is None:
+                        continue
+
+                    if isinstance(observations, dict):
+                        observations = [observations]
+
+                    if isinstance(observations, list):
+                        for observation in observations:
+                            if isinstance(observation, dict):
+                                records.append(dict(observation))
+            else:
+                records = raw_rows
+
+            # Alpha Vantage commodity responses use 'price'.
+            records = [
+                {
+                    **record,
+                    **(
+                        {"close": record["price"]}
+                        if "price" in record and "close" not in record
+                        else {}
+                    ),
+                }
+                for record in records
+            ]
+
+            records = [
+                {key: value for key, value in record.items() if key != "price"}
+                for record in records
+            ]
 
         else:
-            logger.warning(f"⚠️ Skipping {asset_name}: Unknown schema_type configuration structural strategy '{schema_type}'.")
-            return pd.DataFrame()
-        
-        # =====================================================================
-        # UNIFIED DATA ENRICHMENT (Runs for BOTH Equities and Commodities)
-        # =====================================================================
-        # Ensure lineage metadata is tracked cleanly at the front
-        if "asset_name" not in df_cleaned.columns:
-            df_cleaned.insert(0, "asset_name", asset_name)
-            
-        # Convert string numbers from the API into proper numeric metrics types
-        numeric_cols = ["open", "high", "low", "close", "volume"]
-        for col in numeric_cols:
-            if col in df_cleaned.columns:
-                df_cleaned[col] = pd.to_numeric(df_cleaned[col])
-                
-        logger.info(f"✨ Transformed {len(df_cleaned)} rows smoothly for {asset_name} using '{schema_type}' engine.")
-        return df_cleaned
-
-    except Exception as e:
-        print(f"❌ Failed parsing layout structure for {asset_name}: {e}")
-        return pd.DataFrame()
-
-def df_column_check(df: pd.DataFrame, expected_schema: dict) -> pd.DataFrame:
-    if df.empty or not expected_schema:
-        return pd.DataFrame()
-    try:
-        # 1. Validate that all required columns for THIS specific schema exist
-        missing_cols = [col for col in expected_schema.keys() if col not in df.columns]
-        if missing_cols:
-            logger.warning(f"❌ SCHEMA VALIDATION FAILED: Missing columns {missing_cols}")
-            return pd.DataFrame()
-    # 2. Slice out extra columns and enforce strict schema order
-        df_validated = df[list(expected_schema.keys())].copy()
-        
-        # 3. Enforce Datatypes dynamically based on the passed schema rules
-        if "date" in df_validated.columns and not pd.api.types.is_datetime64_any_dtype(df_validated["date"]):
-            df_validated["date"] = pd.to_datetime(df_validated["date"])
-
-        for col, dtype in expected_schema.items():
-            if col != "date":
-                df_validated[col] = df_validated[col].astype(dtype)
-
-        return df_validated
-    except Exception as e:
-        logger.exception(f"❌ Critical error during schema enforcement: {e}")
-        return pd.DataFrame()
-
-def derive_time_attributes(df: pd.DataFrame, date_column: str = "date") -> pd.DataFrame:
-    """
-    Enriches a DataFrame by parsing a date string column into granular 
-    time attributes (year, month, day, day_of_week) for optimized analytics.
-    """
-    if df.empty or date_column not in df.columns:
-        return df
-    
-    df_enriched = df.copy()
-    
-    # 1. Ensure the column is explicitly cast to a Pandas datetime object
-    if not pd.api.types.is_datetime64_any_dtype(df_enriched[date_column]):
-        df_enriched[date_column] = pd.to_datetime(df_enriched[date_column])
-
-    # 2. Extract and insert the granular time coordinates directly after the date column
-    # Using the .dt accessor computes these attributes instantly for the entire column
-    df_enriched.insert(1, "year", df_enriched[date_column].dt.year)
-    df_enriched.insert(2, "month", df_enriched[date_column].dt.month)
-    df_enriched.insert(3, "day", df_enriched[date_column].dt.day)
-    df_enriched.insert(4, "day_of_week", df_enriched[date_column].dt.dayofweek)  # 0=Monday, 6=Sunday
-
-    return df_enriched
-
-def calculate_percentage_changes(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty or not {"asset_name", "close", "date"}.issubset(df.columns):
-        return df
-
-    df_calc = df.sort_values(
-        by=["asset_name", "date"]
-    ).reset_index(drop=True)
-
-    # Previous observation for each asset
-    df_calc["prev_close"] = df_calc.groupby("asset_name")["close"].shift(1)
-    df_calc["prev_date"] = df_calc.groupby("asset_name")["date"].shift(1)
-
-    # Percentage change
-    df_calc["pct_change"] = (
-        (df_calc["close"] - df_calc["prev_close"])
-        / df_calc["prev_close"]
-    ) * 100
-
-    # Check actual NYSE trading-session gaps
-    def verify_trading_gap(row):
-        if pd.isna(row["prev_date"]) or pd.isna(row["date"]):
-            return 1
-
-        trading_days = nyse.valid_days(
-            start_date=pd.Timestamp(row["prev_date"]).date(),
-            end_date=pd.Timestamp(row["date"]).date()
-        )
-
-        return len(trading_days) - 1
-
-    df_calc["trading_day_gap"] = df_calc.apply(
-        verify_trading_gap,
-        axis=1
-    )
-
-    # Suppress returns across missing trading sessions
-    is_data_missing = df_calc["trading_day_gap"] > 1
-    df_calc.loc[is_data_missing, "pct_change"] = float("nan")
-
-    gap_count = is_data_missing.sum()
-
-    if gap_count > 0:
-        logger.warning(
-            f"⚠️ DATA GAP FIREWALL: Set 'pct_change' to NaN "
-            f"on {gap_count} rows due to missing NYSE trading sessions."
-        )
-
-    return df_calc.drop(
-        columns=["prev_close", "prev_date", "trading_day_gap"]
-    )
-
-def calculate_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    required_cols = {"asset_name", "date", "close", "pct_change"}
-
-    if df.empty or not required_cols.issubset(df.columns):
-        return df
-
-    df_calc = df.sort_values(
-        by=["asset_name", "date"]
-    ).copy()
-
-    # Simple Moving Averages
-    df_calc["sma_7"] = (
-        df_calc.groupby("asset_name")["close"]
-        .transform(
-            lambda s: s.rolling(window=7, min_periods=7).mean()
-        )
-    )
-
-    df_calc["sma_30"] = (
-        df_calc.groupby("asset_name")["close"]
-        .transform(
-            lambda s: s.rolling(window=30, min_periods=30).mean()
-        )
-    )
-
-    # Rolling volatility (standard deviation of percentage changes)
-    df_calc["volatility_7"] = (
-        df_calc.groupby("asset_name")["pct_change"]
-        .transform(
-            lambda s: s.rolling(window=7, min_periods=7).std()
-        )
-    )
-
-    df_calc["volatility_30"] = (
-        df_calc.groupby("asset_name")["pct_change"]
-        .transform(
-            lambda s: s.rolling(window=30, min_periods=30).std()
-        )
-    )
-
-    return df_calc.reset_index(drop=True)
-
-def calculate_rsi(
-    df: pd.DataFrame,
-    periods: list[int]
-) -> pd.DataFrame:
-
-    if df.empty or not {"asset_name", "date", "close"}.issubset(df.columns):
-        return df
-
-    if not periods or any(p <= 0 for p in periods):
-        raise ValueError("RSI periods must be positive integers.")
-
-    df_calc = df.sort_values(
-        by=["asset_name", "date"]
-    ).copy()
-
-    def calculate_asset_rsi(close: pd.Series, period: int) -> pd.Series:
-
-        delta = close.diff()
-
-        gains = delta.clip(lower=0)
-        losses = -delta.clip(upper=0)
-
-        avg_gain = gains.ewm(
-            alpha=1 / period,
-            min_periods=period,
-            adjust=False
-        ).mean()
-
-        avg_loss = losses.ewm(
-            alpha=1 / period,
-            min_periods=period,
-            adjust=False
-        ).mean()
-
-        rs = avg_gain / avg_loss
-
-        rsi = 100 - (100 / (1 + rs))
-
-        # Edge cases
-        rsi = rsi.mask(avg_loss == 0, 100)
-        rsi = rsi.mask(
-            (avg_gain == 0) & (avg_loss == 0),
-            50
-        )
-
-        return rsi
-
-    for period in periods:
-        df_calc[f"rsi_{period}"] = (
-            df_calc.groupby("asset_name")["close"]
-            .transform(
-                lambda close: calculate_asset_rsi(close, period)
+            logger.warning(
+                f"Skipping {asset_name}: unsupported schema_type "
+                f"'{schema_type}'."
             )
+            return pl.DataFrame()
+
+        if not records:
+            logger.warning(
+                f"No observations could be extracted for {asset_name}."
+            )
+            return pl.DataFrame()
+
+        df = pl.DataFrame(records, infer_schema_length=None)
+
+        if "asset_name" not in df.columns:
+            df = df.with_columns(
+                pl.lit(asset_name).alias("asset_name")
+            )
+
+        if "date" in df.columns:
+            df = _parse_date_column(df, "date")
+
+        numeric_columns = [
+            column
+            for column in ["open", "high", "low", "close", "volume"]
+            if column in df.columns
+        ]
+
+        if numeric_columns:
+            df = df.with_columns(
+                [
+                    pl.col(column)
+                    .cast(pl.Float64, strict=False)
+                    .alias(column)
+                    for column in numeric_columns
+                ]
+            )
+
+        # Volume should be an integer where possible. Keep it Float64 here
+        # until the configured schema firewall performs the final cast.
+        logger.info(
+            f"Flattened {df.height} rows for {asset_name} "
+            f"using '{schema_type}'."
+        )
+        return df
+
+    except Exception:
+        logger.exception(
+            f"Failed flattening raw Alpha Vantage data for {asset_name}."
+        )
+        return pl.DataFrame()
+
+
+# ---------------------------------------------------------------------------
+# Schema firewall
+# ---------------------------------------------------------------------------
+
+def df_column_check(df: pl.DataFrame,
+    expected_schema: dict,
+    ) -> pl.DataFrame:
+    """
+    Enforce required columns, order, and configured Polars data types.
+
+    Returns an empty DataFrame when validation fails, matching the previous
+    pipeline's success/failure convention.
+    """
+    if df.is_empty() or not expected_schema:
+        return pl.DataFrame()
+
+    try:
+        missing_columns = [
+            column
+            for column in expected_schema
+            if column not in df.columns
+        ]
+
+        if missing_columns:
+            logger.error(
+                f"Schema validation failed. Missing columns: "
+                f"{missing_columns}"
+            )
+            return pl.DataFrame()
+
+        validated = df.select(list(expected_schema.keys()))
+
+        expressions = []
+
+        for column, configured_dtype in expected_schema.items():
+            target_dtype = _polars_dtype(configured_dtype)
+
+            if column == "date":
+                expressions.append(
+                    pl.col(column)
+                    .cast(pl.String)
+                    .str.to_datetime(strict=True)
+                    .alias(column)
+                )
+            else:
+                expression = pl.col(column)
+
+                # Polars distinguishes NaN from null. Convert NaN to null
+                # before casting so missing numeric values are handled
+                # explicitly rather than causing integer-cast exceptions.
+                if validated.schema[column].is_float():
+                    expression = expression.fill_nan(None)
+
+                expressions.append(
+                    expression.cast(target_dtype, strict=True).alias(column)
+                )
+
+        validated = validated.with_columns(expressions)
+
+        if "date" in validated.columns:
+            null_dates = validated.select(
+                pl.col("date").is_null().sum()
+            ).item()
+
+            if null_dates:
+                raise ValueError(
+                    f"Schema validation found {null_dates} null dates."
+                )
+
+        return validated
+
+    except Exception:
+        logger.exception("Schema enforcement failed.")
+        return pl.DataFrame()
+
+
+# ---------------------------------------------------------------------------
+# Time attributes
+# ---------------------------------------------------------------------------
+
+def derive_time_attributes(
+    df: pl.DataFrame,
+    date_column: str = "date",
+) -> pl.DataFrame:
+    """Derive calendar fields from the actual observation date."""
+    if df.is_empty():
+        return df
+
+    parsed = _parse_date_column(df, date_column)
+
+    return parsed.with_columns(
+        pl.col(date_column).dt.year().cast(pl.Int64).alias("year"),
+        pl.col(date_column).dt.month().cast(pl.Int64).alias("month"),
+        pl.col(date_column).dt.day().cast(pl.Int64).alias("day"),
+        # Monday = 0, Sunday = 6, matching pandas dayofweek.
+        (pl.col(date_column).dt.weekday() - 1)
+        .cast(pl.Int64)
+        .alias("day_of_week"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Logical OHLCV integrity firewall
+# ---------------------------------------------------------------------------
+
+def df_integrity_check(df: pl.DataFrame) -> pl.DataFrame:
+    """Remove rows that violate basic positive-price and OHLC rules."""
+    if df.is_empty():
+        return df
+
+    required_price_columns = {"open", "high", "low", "close"}
+
+    if not required_price_columns.issubset(df.columns):
+        logger.warning(
+            "OHLC integrity rules skipped because one or more OHLC "
+            "columns are absent."
+        )
+        return df
+
+    before = df.height
+
+    cleaned = df.filter(
+        (pl.col("open") > 0)
+        & (pl.col("high") > 0)
+        & (pl.col("low") > 0)
+        & (pl.col("close") > 0)
+        & (pl.col("high") >= pl.col("open"))
+        & (pl.col("high") >= pl.col("close"))
+        & (pl.col("low") <= pl.col("open"))
+        & (pl.col("low") <= pl.col("close"))
+    )
+
+    removed = before - cleaned.height
+
+    if removed:
+        logger.warning(
+            f"OHLC integrity firewall removed {removed} invalid rows "
+            f"for {df['asset_name'][0] if 'asset_name' in df.columns else 'asset'}."
         )
 
-    return df_calc.reset_index(drop=True)
+    return cleaned
 
-def df_integrity_check(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Data Integrity Firewall: Validates financial logic across columns.
-    Filters out rows that violate market rules.
-    """
-    if df.empty:
-        return df
-    df_cleaned = df.copy()
-    # 1. Base rule: Prices must be greater than zero (Runs for ALL assets)
-    if "close" in df_cleaned.columns:
-        df_cleaned = df_cleaned[df_cleaned["close"] > 0]
+# ---------------------------------------------------------------------------
+# Silver Parquet writer
+# ---------------------------------------------------------------------------
 
-    # 2. 🟢 DYNAMIC EQUITY RULES (Only runs if 'high', 'low', 'open' exist)
-    if all(col in df_cleaned.columns for col in ["high", "low", "open"]):
-        # High must be greater than or equal to Open and Close
-        df_cleaned = df_cleaned[df_cleaned["high"] >= df_cleaned["open"]]
-        df_cleaned = df_cleaned[df_cleaned["high"] >= df_cleaned["close"]]
-        
-        # Low must be less than or equal to Open and Close
-        df_cleaned = df_cleaned[df_cleaned["low"] <= df_cleaned["open"]]
-        df_cleaned = df_cleaned[df_cleaned["low"] <= df_cleaned["close"]]
-        
-        # Prices must be positive numbers
-        df_cleaned = df_cleaned[df_cleaned["open"] > 0]
-        df_cleaned = df_cleaned[df_cleaned["high"] > 0]
-        df_cleaned = df_cleaned[df_cleaned["low"] > 0]
-
-    return df_cleaned
-
-def save_silver_to_pq(asset_name: str, df: pd.DataFrame):
-    if df.empty:
+def save_silver_to_pq(
+    asset_name: str,
+    df: pl.DataFrame,
+) -> None:
+    if df.is_empty():
         raise ValueError(
             f"Cannot save Silver data for {asset_name}: DataFrame is empty."
         )
@@ -339,101 +417,125 @@ def save_silver_to_pq(asset_name: str, df: pd.DataFrame):
 
     file_path = silver_dir / f"{asset_name}_silver.pq"
 
-    df.to_parquet(file_path, engine="pyarrow", index=False)
-    logger.info(f"💾 Saved silver Parquet file to: {file_path}")
+    df.write_parquet(file_path)
 
-def run_alphavantage_stocks_silver(configs: dict, asset_schemas: dict, silver_output_schema: dict) -> bool:
+    logger.info(f"Saved Silver Parquet file to: {file_path}")
+
+
+# ---------------------------------------------------------------------------
+# Silver pipeline
+# ---------------------------------------------------------------------------
+
+def run_alphavantage_stocks_silver(
+    configs: dict,
+    asset_schemas: dict,
+    silver_output_schema: dict,
+    ) -> bool:
     success = True
+
     for asset_name, asset_config in configs.items():
-        df_raw = pq_to_df(asset_name)
-        if df_raw.empty:
-            print(f"⚠️ Skipping {asset_name}: No raw data found.")
-            success = False
-            continue
-
-        # Step 2: Unpack nested dictionaries and generate dynamic dates
-        df_flattened = flatten_alphavantage_ohlcv(asset_name, df_raw, asset_config)
-        # Step 3: Run the Schema Firewall dynamically
-        # 🟢 1. Finds "equity_daily" or "commodity_gold"
-        schema_key = asset_config.get("schema_type")
-        # 🟢 2. Grabs the expected data type dictionary mapping
-        target_schema = asset_schemas.get(schema_key) 
-
-        if not target_schema:
-            logger.warning(f"⚠️ Skipping {asset_name}: Schema type '{schema_key}' not found.")
-            success = False
-            continue
-
-        # 🟢 3. Passes the dictionary schema map to your column checker
-        df_schema_approved = df_column_check(df_flattened, expected_schema=target_schema)
-        if df_schema_approved.empty:
-            logger.warning(f"⚠️ Skipping {asset_name}: Failed Schema Firewall validation.")
-            success = False
-            continue
-        # Step 4: Run the Time Attribute Enrichment Function
-        df_enriched = derive_time_attributes(df_schema_approved, date_column="date")
-
-        # Step 5: Logical integrity validation
-        df_clean = df_integrity_check(df_enriched)
-
-        if df_clean.empty:
-            logger.warning(
-                f"⚠️ Skipping {asset_name}: Integrity check returned empty data."
-            )
-            success = False
-            continue
-        # Step 6: Calculate percentage changes
-        df_with_metrics = calculate_percentage_changes(df_enriched)
-
-        # Step 7: Calculate technical indicators
-        df_with_indicators = calculate_technical_indicators(df_with_metrics)
-        # Step 8: Calculate RSI
-        df_with_indicators = calculate_rsi(
-            df_with_indicators,
-            periods=RSI_PERIODS
-        )
-        # Step 9: Validate Silver output schema
-        df_silver_approved = df_column_check(
-            df_with_indicators,
-            expected_schema=silver_output_schema
-        )
-        if df_silver_approved.empty:
-            logger.warning(
-                f"⚠️ Skipping {asset_name}: "
-                "Failed Silver output schema validation."
-            )
-            success = False
-            continue
-
-        # Step 10: Save validated Silver output
         try:
+            # 1. Read the latest Bronze file.
+            df_raw = pq_to_df(asset_name)
+
+            if df_raw.is_empty():
+                logger.warning(f"Skipping {asset_name}: no raw data found.")
+                success = False
+                continue
+
+            # 2. Flatten the source-specific Alpha Vantage structure.
+            df_flattened = flatten_alphavantage_ohlcv(
+                asset_name,
+                df_raw,
+                asset_config,)
+
+            if df_flattened.is_empty():
+                logger.warning(f"Skipping {asset_name}: raw flattening returned no data.")
+                success = False
+                continue
+
+            # 3. Validate the source schema.
+            schema_key = asset_config.get("schema_type")
+            target_schema = asset_schemas.get(schema_key)
+
+            if not target_schema:
+                logger.warning(f"Skipping {asset_name}: schema type "
+                                f"'{schema_key}' was not found.")
+                success = False
+                continue
+
+            df_schema_approved = df_column_check(
+                df_flattened,
+                expected_schema=target_schema,)
+
+            if df_schema_approved.is_empty():
+                logger.warning(f"Skipping {asset_name}: source schema validation failed.")
+                success = False
+                continue
+
+            # 4. Derive date attributes from the validated observation dates.
+            df_enriched = derive_time_attributes(
+                df_schema_approved,
+                date_column="date",)
+
+            # 5. Apply logical OHLCV integrity checks.
+            df_clean = df_integrity_check(df_enriched)
+
+            if df_clean.is_empty():
+                logger.warning(f"Skipping {asset_name}: integrity check returned "
+                    f"no valid rows.")
+                success = False
+                continue
+
+            # 6. Enforce the final Silver output schema.
+            df_silver_approved = df_column_check(
+                df_clean,
+                expected_schema=silver_output_schema,
+            )
+
+            if df_silver_approved.is_empty():
+                logger.warning(
+                    f"Skipping {asset_name}: Silver output schema "
+                    f"validation failed."
+                )
+                success = False
+                continue
+
+            # 7. Persist Silver output.
             save_silver_to_pq(
                 asset_name,
-                df_silver_approved
+                df_silver_approved,
             )
 
             logger.info(
-                f"✅ Silver transformation successful for {asset_name} "
-                f"using '{schema_key}' schema.\n"
+                f"Silver transformation successful for {asset_name} "
+                f"using '{schema_key}' schema."
             )
 
-        except Exception as e:
+        except Exception:
             logger.exception(
-                f"❌ Failed to save Silver data for {asset_name}: {e}"
+                f"Silver transformation failed for {asset_name}."
             )
             success = False
 
     return success
 
+
 if __name__ == "__main__":
-    # 1. Resolve paths cleanly
     config_path = PROJECT_ROOT / "config.json"
     asset_schema_path = PROJECT_ROOT / "alphavantage_asset_schemas.json"
-    silver_output_path = AV_STOCKS_PATH / "silver" / "alphavantage_asset_schemas.json"
-    # 2. Load configurations using the helper
+    silver_output_path = (
+        AV_STOCKS_PATH
+        / "silver"
+        / "alphavantage_asset_schemas.json"
+    )
+
     config_data = load_json_file(config_path)
     asset_schema = load_json_file(asset_schema_path)
     silver_output_schema = load_json_file(silver_output_path)
 
-    # 3. Trigger the pipeline
-    run_alphavantage_stocks_silver(config_data, asset_schema,silver_output_schema)
+    run_alphavantage_stocks_silver(
+        config_data,
+        asset_schema,
+        silver_output_schema,
+    )

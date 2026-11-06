@@ -2,23 +2,24 @@ import os
 from dotenv import load_dotenv
 import json
 import requests
-from datetime import datetime
-import time
-import pandas as pd
-from pathlib import Path
-from typing import Optional
+from datetime import datetime, timezone
+import polars as pl
 
 from alphavantage_trackers.paths import (
     CONFIG_PATH,
-    ENV_PATH,
+    AV_ENV_PATH,
     STOCKS_PATH
 )
 from alphavantage_trackers.logging_config import get_pipeline_logger
 logger = get_pipeline_logger("stocks")
 
 from alphavantage_trackers.api.alphavantage_rate_limiter import av_rate_limiter
+from alphavantage_trackers.api.exceptions import (
+    AlphaVantageRateLimitError,
+    AlphaVantageQuotaExceededError
+)
 
-load_dotenv(dotenv_path=ENV_PATH)
+load_dotenv(dotenv_path=AV_ENV_PATH)
 API_KEY = os.getenv("ALPHA_VANTAGE_KEY")
 
 if not API_KEY:
@@ -28,7 +29,7 @@ else:
     logger.info(f"✅ Success: API Key loaded securely.")
 
 def extract_raw_stock(asset_name: str, asset_config: dict) -> dict:
-    base_url = "https://alphavantage.co/query?"
+    base_url = "https://alphavantage.co/query"
     params = {
         "function": asset_config["function"],
         "apikey": API_KEY
@@ -58,9 +59,13 @@ def extract_raw_stock(asset_name: str, asset_config: dict) -> dict:
         return {}
 
     # 4. Data Quality Firewall: Check for the rate limit warning you received
+    if not isinstance(data, dict):
+        logger.error("Unexpected API response format for %s.", asset_name)
+        return {}
+
     if "Information" in data:
-            logger.warning(f"⚠️ RATE LIMIT DETECTED for {asset_name}: {data['Information']}")
-            return {}
+        raise AlphaVantageRateLimitError(data["Information"])
+
     if "Error Message" in data:
         logger.error(f"❌ API Error for {asset_name}: {data['Error Message']}")
         return {}
@@ -68,55 +73,124 @@ def extract_raw_stock(asset_name: str, asset_config: dict) -> dict:
 
 def save_raw_to_disk(asset_name: str, data: dict) -> bool:
     if not data:
-        print(f"❌ No data to save for {asset_name}.")
+        logger.warning("No data to save for %s.", asset_name)
         return False
-    
-    # 1. Establish directory pathing for parquet storage
+
     stocks_dir = STOCKS_PATH / asset_name
     os.makedirs(stocks_dir, exist_ok=True)
 
-    # 2. Generate hourly filename pathing
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H")
     file_path = stocks_dir / f"{timestamp}_{asset_name}_raw.pq"
 
-    # 3. IF NOT ALREADY EXIST FIREWALL
-    # Skips execution cleanly if the file was pulled earlier this hour
     if file_path.exists():
-        logger.info(f"⏭️ File already exists for {asset_name} this hour, skipping save: {file_path}")
+        logger.info(
+            "File already exists for %s this hour, skipping save: %s",
+            asset_name,
+            file_path
+        )
         return True
-    
-    # 4. Save to Disk
     try:
-        df = pd.DataFrame(data)
-        df.to_parquet(file_path, engine="pyarrow", index=False)
-        logger.info(f"💾 Saved clean raw Parquet file to: {file_path}")
+        # Identify the time-series field dynamically.
+        time_series_key = next(
+            (key for key in data if key.startswith("Time Series")),
+            None
+        )
+        if time_series_key is None:
+            logger.error("No time-series field found for %s.", asset_name)
+            return False
+        metadata = data.get("Meta Data", {})
+        time_series = data.get(time_series_key, {})
+
+        if not isinstance(time_series, dict) or not time_series:
+            logger.error("Invalid or empty time-series data for %s.", asset_name)
+            return False
+        # Preserve metadata and observation dates.
+        records = [
+            {
+                "Meta Data": value,
+                time_series_key: None
+            }
+            for value in metadata.values()
+        ]
+        records.extend(
+            {
+                "Meta Data": date,
+                time_series_key: values
+            }
+            for date, values in time_series.items()
+        )
+        df_raw = pl.DataFrame(records)
+        df_raw.write_parquet(file_path)
+        logger.info("Saved raw Parquet file to: %s", file_path)
         return True
-    except Exception as e:
-        logger.exception(f"❌ Failed to convert and save {asset_name} data to Parquet: {e}")
+    except Exception:
+        logger.exception("Failed to save raw data for %s.", asset_name)
         return False
+
     
 def run_alphavantage_stock_bronze(configs: dict) -> bool:
-    logger.info(f"🚀 Initializing stock ingestion cycle...")
+    logger.info("Initializing stock ingestion cycle...")
+
     success = True
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H")
 
     for stock_name, stock_config in configs.items():
-        expected_file = STOCKS_PATH / stock_name /f"{timestamp}_{stock_name}_raw.pq"
+
+        expected_file = (
+            STOCKS_PATH
+            / stock_name
+            / f"{timestamp}_{stock_name}_raw.pq"
+        )
+
         if expected_file.exists():
-            logger.info(f"⏭️ [API SKIPPED] Data for {stock_name} already pulled this hour.")
-            continue
-        raw_payload = extract_raw_stock(stock_name, stock_config)
-
-        if not raw_payload:
-            success = False
+            logger.info(
+                "[API SKIPPED] Data for %s already pulled this hour.",
+                stock_name
+            )
             continue
 
-        if not save_raw_to_disk(stock_name, raw_payload):
+        try:
+            raw_payload = extract_raw_stock(stock_name, stock_config)
+
+            if not raw_payload:
+                success = False
+                continue
+
+            if not save_raw_to_disk(stock_name, raw_payload):
+                success = False
+
+        except AlphaVantageQuotaExceededError as e:
+            logger.warning(
+                "Local API quota exhausted while processing %s. "
+                "Next request available in %.0f seconds.",
+                stock_name,
+                e.retry_after
+            )
             success = False
-            continue
-        
-    logger.info("✅ Full stock extraction cycle finalized.")
+            break
+
+        except AlphaVantageRateLimitError:
+            logger.exception(
+                "Alpha Vantage rate limit reached while processing %s.",
+                stock_name
+            )
+            success = False
+            break
+
+        except Exception:
+            logger.exception(
+                "Unexpected error while processing %s.",
+                stock_name
+            )
+            success = False
+
+    if success:
+        logger.info("Stock extraction completed successfully.")
+    else:
+        logger.warning("Stock extraction completed with failures.")
+
     return success
+
 if __name__ == "__main__":
     stock_config_path = CONFIG_PATH / "alphavantage_stock_config.json"
 

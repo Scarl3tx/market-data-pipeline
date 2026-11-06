@@ -1,0 +1,18 @@
+from pathlib import Path
+from src.alphavantage_trackers.paths import DATA_PATH
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+TWELVE_DATA_ENV = PROJECT_ROOT / "twelvedata_api.env"
+HISTORICAL_RAW_DATA_PATH = DATA_PATH / "historical"
+HISTORICAL_STOCKS_DATA_PATH = HISTORICAL_RAW_DATA_PATH / "stocks"
+HISTORICAL_COMMODITIES_DATA_PATH = HISTORICAL_RAW_DATA_PATH / "commodities"
+
+HISTORICAL_SILVER_DATA_PATH = DATA_PATH / "silver"
+HISTORICAL_SILVER_STOCKS_PATH = HISTORICAL_SILVER_DATA_PATH / "stocks"
+HISTORICAL_SILVER_COMMODITIES_PATH = HISTORICAL_SILVER_DATA_PATH / "commodities"
+
+HISTORICAL_PROGRESS_PATH = HISTORICAL_RAW_DATA_PATH / "historical_progress.json"
+
+TWELVE_DATA_RATE_LIMIT_STATE = (
+    HISTORICAL_RAW_DATA_PATH / "twelvedata_rate_limit_state.json"
+)

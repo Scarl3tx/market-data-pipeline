@@ -1,18 +1,12 @@
 import json
-from pathlib import Path
-
-from alphavantage_trackers.pipelines.av_stocks.bronze.extract_alphavantage_stocks_data import (
-    run_alphavantage_stock_bronze
-)
-
 from alphavantage_trackers.pipelines.av_stocks.silver.silver_transform_alphavantage_stocks import (
     run_alphavantage_stocks_silver
 )
-
 from alphavantage_trackers.paths import (
     CONFIG_PATH,
     AV_STOCKS_PATH
 )
+
 
 from alphavantage_trackers.logging_config import get_pipeline_logger
 
@@ -20,7 +14,7 @@ logger = get_pipeline_logger("stocks")
 
 def run_stocks_pipeline():
 
-    logger.info("\n========== COMMODITIES PIPELINE ==========")
+    logger.info("\n========== STOCKS PIPELINE ==========")
 
     # -------------------------
     # LOAD CONFIGURATION
@@ -43,22 +37,6 @@ def run_stocks_pipeline():
     except (FileNotFoundError, json.JSONDecodeError) as exc:
         logger.exception(f"[STOCKS] Configuration error: {exc}")
         return False
-
-    # -------------------------
-    # BRONZE
-    # -------------------------
-
-    logger.info("\n========== [STOCKS] Starting Bronze ==========")
-
-    bronze_success = run_alphavantage_stock_bronze(
-        configs=stocks_config
-    )
-
-    if not bronze_success:
-        logger.error("[STOCKS] Bronze failed. Skipping Silver.")
-        return False
-
-    logger.info("\n========== [STOCKS] Bronze completed successfully ==========")
 
     # -------------------------
     # SILVER
@@ -113,3 +91,7 @@ def run_stocks_pipeline():
     logger.info("\n========== STOCKS PIPELINE COMPLETE ==========\n")
 
     return True
+
+if __name__ == "__main__":
+    success = run_stocks_pipeline()
+    print(f"Stocks pipeline result: {success}")

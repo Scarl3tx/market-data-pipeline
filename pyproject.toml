@@ -12,13 +12,19 @@ dependencies = [
     "ipykernel>=7.4.0",
     "pandas>=3.1.0",
     "pandas-market-calendars>=5.6.0",
+    "polars>=2.1.0",
     "pyarrow>=26.0.0",
+    "pytest>=9.2.0",
     "python-dotenv>=1.2.4",
     "requests>=2.34.2",
 ]
 
 [project.scripts]
 alphavantage-trackers = "alphavantage_trackers:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
 
 [build-system]
 requires = ["uv_build>=0.13.5,<0.14.0"]

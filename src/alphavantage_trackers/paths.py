@@ -7,7 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = PROJECT_ROOT / "configs"
 
 # Env paths
-ENV_PATH = PROJECT_ROOT / "alphavantage_api.env"
+AV_ENV_PATH = PROJECT_ROOT / "alphavantage_api.env"
 
 # Src directory
 SRC_PATH = PROJECT_ROOT / "src"

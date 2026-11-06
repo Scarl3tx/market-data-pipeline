@@ -3,7 +3,9 @@ from contextlib import closing
 
 from alphavantage_trackers.paths import API_TRACKER_PATH
 from alphavantage_trackers.api.quota_storage import QuotaStorage
-
+from alphavantage_trackers.api.exceptions import (
+    AlphaVantageQuotaExceededError
+)
 class RateLimiter:
 
     def __init__(
@@ -22,6 +24,8 @@ class RateLimiter:
 
         while True:
 
+            wait_duration = 0
+
             with closing(self.storage.connect()) as conn:
 
                 conn.execute("BEGIN IMMEDIATE")
@@ -29,6 +33,7 @@ class RateLimiter:
                 now = time.time()
                 cutoff = now - self.window_seconds
 
+                # Remove expired requests
                 conn.execute(
                     """
                     DELETE FROM api_requests
@@ -47,23 +52,29 @@ class RateLimiter:
                     (cutoff,)
                 ).fetchall()
 
-                wait_until = now
-
                 # Daily quota check
                 if len(requests) >= self.max_requests:
-                    wait_until = max(
-                        wait_until,
-                        requests[0][0] + self.window_seconds
+
+                    retry_after = (
+                        requests[0][0] + self.window_seconds - now
+                    )
+
+                    conn.commit()
+
+                    raise AlphaVantageQuotaExceededError(
+                        retry_after=retry_after
                     )
 
                 # Minimum interval check
                 if requests:
-                    wait_until = max(
-                        wait_until,
-                        requests[-1][0] + self.min_interval
-                    )
 
-                if wait_until <= now:
+                    wait_until = requests[-1][0] + self.min_interval
+
+                    if wait_until > now:
+                        wait_duration = wait_until - now
+
+                # Reserve a request slot
+                if wait_duration == 0:
 
                     conn.execute(
                         """
@@ -78,15 +89,15 @@ class RateLimiter:
 
                 conn.commit()
 
-            sleep_duration = wait_until - time.time()
+            # Wait only for the minimum request interval
+            if wait_duration > 0:
 
-            if sleep_duration > 0:
                 print(
                     f"[RATE LIMITER] Waiting "
-                    f"{sleep_duration:.2f} seconds..."
+                    f"{wait_duration:.2f} seconds..."
                 )
 
-                time.sleep(sleep_duration)
+                time.sleep(wait_duration)
 
 
 quota_storage = QuotaStorage(

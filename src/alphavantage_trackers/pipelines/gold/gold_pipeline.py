@@ -66,3 +66,6 @@ def log_gold_table_counts(conn, logger):
         )
 
     logger.info("========================================")
+
+if __name__ == "__main__":
+    run_gold_pipeline()
