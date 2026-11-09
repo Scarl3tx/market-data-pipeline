@@ -1,0 +1,34 @@
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+.git
+.idea
+.vscode
+.ipynb_checkpoints
+
+data
+logs
+*.env
+.env
+.env.*
+
+tests
+notebooks
+dist
+build
+*.egg-info
+# Lambda environment snapshots and execution outputs
+lambda-environment*.json
+lambda-result*.json
+lambda-response*.json
+lambda-test-response.json
+
+# Generated S3 inspection outputs
+s3-encryption-result*.json
+s3-encryption-response*.json

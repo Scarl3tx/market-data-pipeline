@@ -1,0 +1,9 @@
+{
+    "Input":  "{}",
+    "RoleArn":  "arn:aws:iam::860897619002:role/service-role/Amazon_EventBridge_Scheduler_LAMBDA_3e1fa72ebc",
+    "RetryPolicy":  {
+                        "MaximumEventAgeInSeconds":  86400,
+                        "MaximumRetryAttempts":  5
+                    },
+    "Arn":  "arn:aws:lambda:ap-southeast-2:860897619002:function:market-data-pipeline"
+}

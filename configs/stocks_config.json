@@ -1,0 +1,65 @@
+
+{
+  "stocks": [
+    {"symbol": "NVDA", "name": "NVIDIA", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "MSFT", "name": "Microsoft", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "AAPL", "name": "Apple", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "ORCL", "name": "Oracle", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "CSCO", "name": "Cisco Systems", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "TXN", "name": "Texas Instruments", "enabled": true, "start_date": "2000-01-01"},
+
+    {"symbol": "JPM", "name": "JPMorgan Chase", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "BAC", "name": "Bank of America", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "GS", "name": "Goldman Sachs", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "BLK", "name": "BlackRock", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "V", "name": "Visa", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "PGR", "name": "Progressive", "enabled": true, "start_date": "2000-01-01"},
+
+    {"symbol": "JNJ", "name": "Johnson & Johnson", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "LLY", "name": "Eli Lilly", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "MRK", "name": "Merck", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "ABT", "name": "Abbott Laboratories", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "UNH", "name": "UnitedHealth Group", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "ISRG", "name": "Intuitive Surgical", "enabled": true, "start_date": "2000-01-01"},
+
+    {"symbol": "CAT", "name": "Caterpillar", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "HON", "name": "Honeywell", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "GE", "name": "GE Aerospace", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "UNP", "name": "Union Pacific", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "RTX", "name": "RTX Corporation", "enabled": true, "start_date": "2000-01-01"},
+
+    {"symbol": "AMZN", "name": "Amazon", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "HD", "name": "Home Depot", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "MCD", "name": "McDonald's", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "BKNG", "name": "Booking Holdings", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "NKE", "name": "Nike", "enabled": true, "start_date": "2000-01-01"},
+
+    {"symbol": "PG", "name": "Procter & Gamble", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "KO", "name": "Coca-Cola", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "WMT", "name": "Walmart", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "COST", "name": "Costco", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "CL", "name": "Colgate-Palmolive", "enabled": true, "start_date": "2000-01-01"},
+
+    {"symbol": "XOM", "name": "Exxon Mobil", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "CVX", "name": "Chevron", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "COP", "name": "ConocoPhillips", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "SLB", "name": "SLB", "enabled": true, "start_date": "2000-01-01"},
+
+    {"symbol": "LIN", "name": "Linde", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "NEM", "name": "Newmont", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "SHW", "name": "Sherwin-Williams", "enabled": true, "start_date": "2000-01-01"},
+
+    {"symbol": "GOOGL", "name": "Alphabet", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "META", "name": "Meta Platforms", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "NFLX", "name": "Netflix", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "VZ", "name": "Verizon", "enabled": true, "start_date": "2000-01-01"},
+
+    {"symbol": "NEE", "name": "NextEra Energy", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "DUK", "name": "Duke Energy", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "SO", "name": "Southern Company", "enabled": true, "start_date": "2000-01-01"},
+
+    {"symbol": "PLD", "name": "Prologis", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "AMT", "name": "American Tower", "enabled": true, "start_date": "2000-01-01"},
+    {"symbol": "EQIX", "name": "Equinix", "enabled": true, "start_date": "2000-01-01"}
+  ]
+}

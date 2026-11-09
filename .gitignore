@@ -1,29 +1,64 @@
-# 1. Isolate Python Virtual Environments
+# Python virtual environments
 .venv/
 venv/
 ENV/
 
-# 1. Ignore all files and subfolders inside the data/log folder
-data/**/*
-logs/**
-# 2. Allow Git to track the structural .gitkeep files
-!data/**/.gitkeep
-
-# 3. Isolate Python Cache Files
-__pycache__/
-*.pyc
-
-# 4. Isolate IDE and Local Version Managers
-.vscode/
-.idea/
-.python-version
-
-# 5. Isolate Secrets / Environment Variables
+# Local environment variables and API credentials
 .env
 .env.*
 *.env
 
-# 6. Python Notebook for function testing and visualization
+# Data files and generated pipeline output
+data/**
+!data/.gitkeep
+!data/**/.gitkeep
+
+# Logs
+logs/
+*.log
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test and tooling caches
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+
+# IDE and editor settings
+.vscode/
+.idea/
+
+# Python version manager
+.python-version
+
+# Jupyter
+.ipynb_checkpoints/
 tracker_test.ipynb
-# 7. JSON File for Reading JSON
+
+# Local JSON testing file
 reader.json
+
+# Lambda local environment snapshots (potentially sensitive)
+lambda-environment*.json
+
+# Lambda execution/debug outputs
+lambda-result*.json
+lambda-response*.json
+
+# Lambda test outputs
+lambda-test-response.json
+
+# S3 generated inspection/encryption outputs
+s3-encryption-result*.json
+s3-encryption-response*.json

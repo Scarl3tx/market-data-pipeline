@@ -1,0 +1,14 @@
+{
+    "article_id": "object",
+    "title": "object",
+    "source": "object",
+    "time_published": "datetime64[ns]",
+    "date": "date",
+    "url": "object",
+    "summary": "object",
+    "overall_sentiment_score": "float64",
+    "overall_sentiment_label": "object",
+    "ticker": "object",
+    "ticker_sentiment_score": "float64",
+    "ticker_sentiment_label": "object"
+}
